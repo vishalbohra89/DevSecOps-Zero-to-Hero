@@ -1,0 +1,107 @@
+1. Purpose
+The Technical Guidelines (docs.tech.cessda.eu) describe an infrastructure built entirely on Google Cloud Platform (GCP). We have since built a proof of concept (PoC) on Safespring, including two Kubernetes clusters and new CI/CD pipelines for the CESSDA Vocabulary Service (CVS). This proposal sets out how the guidelines will be updated to match.
+
+2. Current state
+
+	•	Safespring PoC: It runs alongside GCP, and GCP remains the production platform.
+	•	Clusters: cessda-mgmt is the management cluster and cessda-svc is the service cluster.
+	•	Scope: CVS in staging is the only product covered so far.
+	•	Goal: Build and prove the pipelines on Safespring so that CVS can later move off GCP.
+	•	Pipelines: Jenkins builds the CVS images with Docker-in-Docker and pushes them to GHCR. A successful build then triggers a Helm deployment to Safespring. Cluster configuration is managed with ArgoCD (GitOps), and secrets are encrypted with SOPS/age.
+
+3. What is outdated in the guidelines
+
+	•	The Technical Infrastructure pages assume GCP and GKE only, with development, staging, production and management clusters.
+	•	The CI/CD pages describe the GCP registry and the older build and deployment flow.
+	•	Naming Conventions do not cover the Safespring clusters (cessda-mgmt, cessda-svc) or their hostnames.
+	•	The Secrets and Monitoring pages do not cover SOPS/age or the new alerting rules.
+
+The Software Development pages (GitHub, Jenkins, SonarQube, Docker, Kubernetes) are still valid and need little or no change.
+
+4. Proposed changes
+New sub-section under Technical Infrastructure: "Safespring Cloud Platform (PoC)"
+
+	1.	Overview and scope: status, goals and limits of the PoC.
+	2.	Platform design: clusters, networking, certificates, GitOps and secrets.
+	3.	CI/CD pipelines: build, image registry, deployment and tagging rules.
+	4.	CVS on Safespring: Elasticsearch, MySQL and Helm deployment.
+	5.	Operations: monitoring, alerts, troubleshooting and known limitations.
+
+Updates to existing pages
+
+	•	Technical Infrastructure index and Overview: add a note that Safespring is a PoC, with links to the new section.
+	•	Naming Conventions: add the Safespring cluster and hostname patterns.
+	•	CI/CD pages (Docker images, Helm, Deployment Pipeline): add the new pipeline flow.
+	•	Storing Secrets and Monitoring Overview: add the Safespring approach.
+
+GCP pages stay as they are, with a banner stating that GCP is the current production platform.
+
+5. Content rules (public repository)
+The guidelines repository is public. Pages will cover design, process and troubleshooting steps. They will not include IP addresses, security group rules, credentials, tokens or secret values. Detailed internal runbooks can stay in a private repository and be linked from the public pages.
+
+6. Deliverable and next steps
+
+	•	Updated and new pages submitted as pull requests to cessda/cessda.guidelines.public, reviewed and merged.
+	•	Suggested order: (1) new Safespring section, (2) Overview and Naming Conventions, (3) CI/CD, Secrets and Monitoring pages.
+	•	Success measure: all updated sections merged, including the new PoC section.
+
+7. Questions for you
+
+	•	Who reviews and approves the pull requests?
+	•	Is there a target date?
+	•	Is the Safespring section meant to be the long-term home for the platform docs if CVS moves, or only for the PoC?
+
+Once your manager agrees, I can draft the first page, the Safespring Overview, in the guidelines' Markdown format.
+
+
+
+1. Scope and status
+
+	•	Purpose and PoC status, with GCP still the production platform.
+	•	In scope: cessda-mgmt, cessda-svc and CVS staging.
+	•	Out of scope: other products, production cutover.
+
+2. Architecture (one diagram plus a few lines)
+
+	•	cessda-mgmt: Jenkins, ArgoCD, Prometheus, Grafana and Alertmanager.
+	•	cessda-svc: CVS workloads, Elasticsearch, MySQL and the registry.
+	•	Platform stack: Talos Linux, Cilium Gateway API, cert-manager (Let's Encrypt), and the Cinder storage class.
+
+3. Build and deployment flow
+
+	•	The cluster build runs through a Jenkins pipeline, with the cluster config in the cessda-mgmt-gitops repo and ArgoCD syncing it.
+	•	CVS flow: push to main in cessda.cvs.two → Jenkins builds a Docker-in-Docker image → push to GHCR with an immutable tag (main-<build>) → auto-trigger deployment_using_helm_charts → Helm deploys to Safespring.
+	•	Elasticsearch uses a custom image with the ICU plugin.
+
+4. CVS components
+
+	•	Done: frontend, Elasticsearch (ECK) and MySQL.
+	•	Pending: the contentguide, userguide, mailrelay and reverse components, plus the HTTPRoute fan-out.
+
+5. Security and secrets
+
+	•	SOPS/age with KSOPS for secrets in Git.
+	•	Registry credentials, and the baseline versus privileged PodSecurity setting for the Jenkins namespace.
+	•	IP restrictions at the Safespring security-group layer.
+
+6. Monitoring and operations
+
+	•	Alerting rules for certificate expiry, Elasticsearch health and PVC capacity.
+	•	Certificate renewal, and the backup plan for MySQL and Elasticsearch.
+	•	Rollback: RollingUpdate keeps the old ReplicaSet running if a deploy fails.
+
+7. Risks and known gaps
+
+	•	MySQL is single-instance, not HA, and Elasticsearch runs one node.
+	•	No LoadBalancer on Safespring, so NodePort and Gateway are used instead.
+	•	The Jenkins parameter default latest is never pushed, so manual deploys can fail.
+	•	Certificate renewals for the management hostnames are still being investigated.
+	•	The mgmt cluster build depends on Jenkins, and that Jenkins runs on cessda-mgmt itself.
+
+8. Plan and next steps
+
+	•	Finish the pending CVS components and move MySQL under Helm.
+	•	Resize Elasticsearch storage and address the HA gaps.
+	•	Run a full staging test of the pipeline, then agree success criteria for moving CVS off GCP.
+
+For management, keep sections 1, 2, 3, 7 and 8 to one page, and put the rest in an appendix. Do you want me to turn this into the Safespring Overview page for the guidelines, or a one-page management summary?
