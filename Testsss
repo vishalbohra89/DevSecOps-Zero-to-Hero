@@ -1,0 +1,161 @@
+Networking and Security Architecture of the CESSDA Management Cluster
+1. Overview
+The CESSDA management cluster uses Cilium as the networking and traffic-routing solution, with Cilium Gateway API and Envoy handling external HTTP traffic. The architecture does not rely on the older ingress-nginx controller.
+Safespring does not provide the Kubernetes LoadBalancer service functionality required to automatically provision an external load balancer address. To work around this limitation, the cluster uses static NodePort mappings to expose the Cilium Envoy proxy running on the cluster nodes.
+The main components are:
+Cilium: Kubernetes networking, network policy enforcement, and Gateway API implementation.
+Cilium Gateway API: Declarative configuration of external HTTP routing.
+Envoy: Proxy that receives incoming HTTP/HTTPS traffic and forwards it to the appropriate backend service.
+Static NodePort mappings: Provide externally reachable ports on the cluster nodes, configured through cessda-gateway-static-ports.yaml.
+cert-manager and Let's Encrypt: Automate TLS certificate issuance and renewal.
+CESSDA TLS secret (cessda-ts): Provides the TLS certificate and private key for the management cluster's configured hostnames.
+Kubernetes RBAC and Cilium secret access: Control how the relevant Cilium components access TLS secrets.
+2. Why we use Cilium Gateway API
+Cilium is used as the primary networking and traffic-management solution for the cluster. Its Gateway API implementation provides a Kubernetes-native way to configure how incoming traffic reaches services.
+Why this approach was chosen
+Native Kubernetes integration: Gateways and HTTPRoutes are managed as Kubernetes resources.
+Centralised traffic management: Multiple services can be exposed through a common gateway.
+Flexible HTTP routing: Requests can be routed according to hostnames, paths, and other supported HTTPRoute rules.
+Security: Cilium provides network policy enforcement, while TLS and Kubernetes RBAC help protect application traffic and credentials.
+Reduced dependence on a separate ingress controller: There is no need to maintain ingress-nginx alongside Cilium for this routing architecture.
+Gateway API standardisation: Gateway and HTTPRoute resources provide a standard, declarative interface for managing traffic.
+Alternatives
+Alternative
+Why it was not selected
+ingress-nginx
+A traditional Ingress-based approach that would introduce a separate controller instead of using the existing Cilium networking stack.
+Traefik
+Another ingress and gateway solution, but it would introduce an additional networking component to maintain.
+HAProxy-based ingress
+Provides similar proxying capabilities but requires a different controller and configuration approach.
+Cloud-provider LoadBalancer
+Would simplify external exposure, but Safespring does not provide the required LoadBalancer functionality in this setup.
+Decision: Cilium Gateway API was selected to integrate networking, policy enforcement, and HTTP routing into the existing cluster networking architecture.
+3. Why static NodePort mappings are used
+Kubernetes normally allows a Service of type LoadBalancer to request an external load balancer from the underlying infrastructure. In the Safespring environment, that functionality is not available for this cluster.
+To make the gateway externally accessible, static NodePort mappings are used instead.
+The configuration file cessda-gateway-static-ports.yaml defines the port mappings used to expose the Cilium Envoy gateway through the cluster nodes.
+
+
+How it works
+External user or client
+Connects using a management service hostname
+Safespring network / node address
+Traffic reaches the configured node IP and static port mapping
+Cilium Envoy proxy
+Receives HTTP/HTTPS traffic on the exposed gateway ports
+Cilium Gateway and HTTPRoute rules
+Match the requested hostname and route the request to the appropriate backend
+Kubernetes Service → application Pod
+Jenkins, Argo CD, Grafana, Alertmanager, or another configured service
+Why this approach was chosen
+It works within Safespring's infrastructure limitations.
+It provides external access without requiring a cloud-managed load balancer.
+It allows multiple services to share the gateway infrastructure through hostname-based routing.
+It uses static port mappings that can be documented and managed consistently.
+Alternatives
+MetalLB: Could provide LoadBalancer-type services if deployed and supported, subject to Safespring network integration and address allocation.
+External load balancer: A separately provisioned load balancer could forward traffic to the gateway nodes.
+NodePort without a gateway: Each application could be exposed directly, but this would create more exposed ports and less centralised HTTP routing.
+Host networking or manually configured proxying: Could expose gateway traffic, but would add operational complexity and require additional configuration.
+Decision: Static NodePort mappings provide a practical way to expose the Cilium Gateway in an environment without managed LoadBalancer support.
+4. Why Gateway status can show Programmed=False
+Cilium Gateway API uses Kubernetes Gateway resources and status conditions to report the state of the gateway.
+In this environment, the Gateway's Programmed=False condition is understood to be related to the lack of a provisioned load balancer address. However, this condition should not automatically be treated as harmless: its exact reason and message must be checked.
+A gateway can sometimes receive traffic through manually configured NodePorts even when the standard load-balancer provisioning workflow has not completed.
+The distinction is important:
+Infrastructure reachability: The NodePort mapping makes the gateway reachable through the node addresses.
+Gateway API status: The Gateway controller reports whether the gateway has been successfully programmed according to the Gateway API conditions.
+Safespring has confirmed that traffic can work through the configured NodePort mappings, even though the environment does not provide a managed LoadBalancer address.
+For documentation, the following wording is appropriate:
+The Gateway may report Programmed=False because the deployment does not use a provider-managed LoadBalancer address. External traffic is instead exposed through static NodePort mappings. Safespring has confirmed that this access method works in the current environment. The Gateway status condition is therefore evaluated alongside the actual traffic path and the condition's reported reason, rather than being used as the sole indicator of reachability.
+Operational note: Check the Gateway's status.conditions, including the reason and message fields, to verify that the condition is specifically related to address provisioning rather than a separate programming error. A working NodePort does not, by itself, prove that every Gateway API resource has been programmed correctly.
+5. Why cert-manager and Let's Encrypt are used
+The management cluster exposes services through hostnames, so HTTPS certificates are needed to secure access.
+cert-manager automates certificate issuance, renewal, and lifecycle management. Let's Encrypt acts as the certificate authority.
+The cluster uses the ACME HTTP-01 challenge through the Gateway API traffic path.
+How certificate issuance works
+cert-manager requests a certificate from Let's Encrypt.
+Let's Encrypt validates control of the hostname using an HTTP-01 challenge.
+The challenge request reaches the cluster through the externally accessible gateway path.
+The challenge response is served through the configured HTTP routing.
+After successful validation, the certificate is issued and stored in a Kubernetes TLS Secret.
+cert-manager renews the certificate when required.
+Why this approach was chosen
+Automates certificate issuance and renewal.
+Avoids manual certificate installation for every hostname.
+Supports standard HTTPS access for management services.
+Integrates certificate lifecycle management with Kubernetes resources.
+Alternatives
+Alternative
+Trade-off
+Manually managed certificates
+More administrative work and a higher risk of expired certificates.
+DNS-01 challenge
+Useful when HTTP access is unavailable or wildcard certificates are needed, but requires DNS API access or manual DNS changes.
+Internal certificate authority
+Provides internal trust management but requires clients to trust the internal CA.
+Another public CA
+Could provide equivalent certificates but may require a different validation and automation setup.
+Important: HTTP-01 validation requires Let's Encrypt to reach the challenge endpoint over public HTTP on port 80. The static NodePort configuration and any upstream network forwarding must support that path. A DNS record pointing to a node is not sufficient if the required port is unreachable.
+6. Why the cessda-ts TLS Secret is used
+The cessda-ts Kubernetes TLS Secret is used to make the certificate and private key available to the relevant gateway configuration.
+It covers the configured hostnames for the CESSDA management services, including:
+Jenkins
+Argo CD
+Grafana
+Alertmanager
+Prometheus, where configured
+A single certificate can cover multiple hostnames through Subject Alternative Names (SANs), provided that all the required names are included in the certificate.
+Why this approach was chosen
+Centralises certificate management for the configured service hostnames.
+Avoids maintaining separate certificates for every application when a shared certificate is appropriate.
+Works with Kubernetes TLS Secret references and Gateway API listener configuration.
+Integrates with automated certificate renewal through cert-manager.
+Alternatives
+Separate TLS certificates and Secrets for each hostname.
+A wildcard certificate for an appropriate DNS zone.
+TLS termination at an external load balancer or reverse proxy.
+An internal certificate authority for private-only services.
+Security consideration: A shared TLS Secret simplifies management but increases the impact of a compromised private key. Access should be limited to the components and namespaces that require it. Also verify that the Secret's namespace matches the Gateway listener's TLS Secret reference requirements.
+7. Why Cilium secret access and RBAC are configured
+TLS certificates and private keys are stored in Kubernetes Secrets. Cilium's gateway implementation must be able to access the relevant certificate material when it configures Envoy for TLS termination.
+The relevant Cilium components use Kubernetes RBAC to control access to Secrets. The roles and bindings associated with the Cilium operator and secret-reader functionality provide the required permissions.
+Why this approach was chosen
+Enables the gateway to load TLS certificate material.
+Follows Kubernetes' role-based access control model.
+Separates permissions from application traffic-routing rules.
+Reduces the need to grant broad administrative access to networking components.
+Alternatives
+Granting broad cluster-wide Secret permissions, which is simpler but increases security risk.
+Using a different TLS termination component with its own certificate-access model.
+Terminating TLS at an external proxy, reducing the need for the gateway to read application-facing TLS Secrets.
+Security recommendation: Grant only the Secret permissions required by the actual Cilium version and deployment configuration. Confirm the exact ClusterRoles and bindings used in this cluster, since the names cilium-operator and cilium-secret-reader alone do not establish which permissions they contain.
+8. Summary of architectural decisions
+Component
+Why it is used
+Main alternative
+Cilium
+Cluster networking, network policies, and Gateway API integration
+Other CNI or networking implementations
+Cilium Gateway API
+Declarative, centralised HTTP routing
+ingress-nginx, Traefik, HAProxy
+Envoy
+Proxies incoming traffic to the selected backend
+Another gateway or reverse-proxy implementation
+Static NodePort mappings
+External exposure without Safespring LoadBalancer support
+MetalLB or an external load balancer
+cert-manager
+Automated certificate lifecycle management
+Manual certificate management
+Let's Encrypt HTTP-01
+Public certificate issuance using HTTP hostname validation
+DNS-01 or another CA
+cessda-ts
+Shared TLS certificate for the configured service hostnames
+Per-service certificates or a suitable wildcard certificate
+Kubernetes RBAC
+Controlled access to TLS Secrets
+Broader permissions or another secret-access model
